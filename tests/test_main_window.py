@@ -43,6 +43,7 @@ def app_window(qapp):
         foreground=lambda: ("chrome.exe", "Docs - Chrome"),
     )
     window = MainWindow(conn, controller=controller, today=lambda: TODAY)
+    window._confirm_plan_nudge = lambda: True  # tests never open a modal
     yield window, clock, conn
     window._timer.stop()
     conn.close()
@@ -142,7 +143,7 @@ def test_category_editor_saves_rule(app_window):
     window._on_start_clicked()
     clock.advance(2)
     window._on_tick()
-    window.tabs.setCurrentIndex(2)  # opening the tab refreshes the list
+    window.tabs.setCurrentIndex(3)  # opening the tab refreshes the list
     window._categories_table.setCurrentCell(0, 0)
     assert window._selected_app_name() == "chrome.exe"
     window._category_combo.setCurrentText(config.CATEGORY_STUDY)
@@ -184,6 +185,7 @@ def test_close_stops_timer_finalizes_and_closes_db(qapp, tmp_path):
         foreground=lambda: ("chrome.exe", "Docs"),
     )
     window = MainWindow(conn, controller=controller, today=lambda: TODAY)
+    window._confirm_plan_nudge = lambda: True  # tests never open a modal
     window._on_start_clicked()
     clock.advance(4)
     window.close()

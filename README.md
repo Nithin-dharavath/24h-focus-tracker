@@ -13,6 +13,12 @@ Built to the MVP baseline in `24H_Focus_Tracker_BRD.docx` (BRD-24HFT-001) and
 - **Manual session control** — you press Start; the app polls the foreground
   executable every ~2 seconds and records short usage intervals with
   timestamps, application name, window title, category, and duration.
+- **Daily plan (todo list)** — a dedicated tab where you write down what
+  you're doing today, with checkbox tasks; each day keeps its own list.
+  Pressing Start with an empty plan gently offers to write it first.
+- **Reset day** — a confirm-guarded button that permanently deletes
+  everything tracked today (charts, totals, app table return to zero).
+  Past days and your daily plan are not affected.
 - **Idle detection** — intervals with no keyboard/mouse input for 60 seconds
   or more are classified as *Idle* and shown separately.
 - **Gap protection** — polling gaps longer than 15 seconds (sleep, desktop
@@ -65,8 +71,11 @@ Usage records live in a single local SQLite database:
 %LOCALAPPDATA%\24HFocusTracker\focus_tracker.sqlite3
 ```
 
+Usage intervals live in `usage_interval`; your per-day plan tasks live in
+`daily_task` (a Reset day clears intervals only — plans are kept).
+
 To back up your history, copy this file while the app is not running.
-Deleting it resets all statistics.
+Deleting it resets all statistics and plans.
 
 ## Running the tests
 
@@ -74,9 +83,10 @@ Deleting it resets all statistics.
 pytest
 ```
 
-The suite (69 tests) covers the database layer, the tracking state machine,
-report calculations, and the main window (headless, offscreen Qt), mapping to
-the acceptance test cases in FRD section 11.
+The suite (95 tests) covers the database layer, the tracking state machine,
+report calculations, plan tasks, the main window, and the Daily plan /
+Reset day features (headless, offscreen Qt), mapping to the acceptance test
+cases in FRD section 11 plus the follow-up feature tests.
 
 ## Honest limitations (from the BRD/FRD)
 
@@ -98,13 +108,15 @@ the acceptance test cases in FRD section 11.
 main.py                  entry point (python main.py)
 focus_tracker/
     config.py            named constants: thresholds, targets, paths
-    database.py          SQLite schema, intervals, category rules, queries
+    database.py          SQLite schema, intervals, category rules,
+                         plan tasks, day reset, queries
     tracker.py           Start/Pause/Resume/Stop state machine + poll tick,
                          Windows foreground & idle providers
     reporting.py         formatting and calculation helpers
     charts.py            Matplotlib bar / pie / weekly stacked charts
-    main_window.py       PySide6 window: header, controls, cards, tabs
-tests/                   pytest suite (69 tests)
+    main_window.py       PySide6 window: header, controls, cards,
+                         Today / Weekly / Daily plan / Categories tabs
+tests/                   pytest suite (95 tests)
 ```
 
 ## Future considerations (from the BRD)

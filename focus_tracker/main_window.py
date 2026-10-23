@@ -12,7 +12,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QTabWidget,
@@ -167,6 +171,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_today_tab(), "Today")
         self.tabs.addTab(self._build_weekly_tab(), "Weekly report")
+        self.tabs.addTab(self._build_plan_tab(), "Daily plan")
         self.tabs.addTab(self._build_categories_tab(), "App categories")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs, 1)
@@ -207,6 +212,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._pause_btn)
         layout.addWidget(self._stop_btn)
         layout.addStretch(1)
+        self._reset_day_btn = QPushButton("Reset day")
+        self._reset_day_btn.setToolTip(
+            "Permanently delete everything tracked today. Past days are not affected."
+        )
+        self._reset_day_btn.clicked.connect(self._on_reset_day_clicked)
+        layout.addWidget(self._reset_day_btn)
         return bar
 
     def _build_today_tab(self) -> QWidget:
@@ -273,6 +284,129 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._weekly_table, 3)
         return tab
 
+    def _build_plan_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(4, 10, 4, 4)
+        layout.setSpacing(8)
+
+        self._plan_day_label = QLabel("", objectName="section_label")
+        layout.addWidget(self._plan_day_label)
+        intro = QLabel(
+            "Write down what you are doing today before pressing Start — "
+            "then tick tasks off as you go. Each day has its own list.",
+            objectName="card_sub",
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(8)
+        self._task_input = QLineEdit()
+        self._task_input.setPlaceholderText(
+            "e.g. Physics assignment — chapter 4"
+        )
+        self._task_input.returnPressed.connect(self._on_add_plan_task_clicked)
+        add_task_btn = QPushButton("Add task", objectName="primary")
+        add_task_btn.clicked.connect(self._on_add_plan_task_clicked)
+        add_row.addWidget(self._task_input, 1)
+        add_row.addWidget(add_task_btn)
+        layout.addLayout(add_row)
+
+        self._plan_list = QListWidget()
+        self._plan_list.itemChanged.connect(self._on_plan_item_changed)
+        self._plan_list.setAlternatingRowColors(True)
+        layout.addWidget(self._plan_list, 1)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
+        self._plan_progress_label = QLabel("", objectName="card_sub")
+        delete_btn = QPushButton("Delete selected")
+        delete_btn.clicked.connect(self._on_delete_plan_task_clicked)
+        clear_btn = QPushButton("Clear completed")
+        clear_btn.clicked.connect(self._on_clear_completed_clicked)
+        bottom_row.addWidget(self._plan_progress_label, 1)
+        bottom_row.addWidget(delete_btn)
+        bottom_row.addWidget(clear_btn)
+        layout.addLayout(bottom_row)
+        self._plan_updating = False  # re-entrancy guard for itemChanged
+        self._refresh_plan()
+        return tab
+
+    def _refresh_plan(self) -> None:
+        """Rebuild the checkbox list from *today's* stored plan."""
+        self._plan_day_label.setText(
+            f"Plan for {self._today().strftime('%a %d %b')}"
+        )
+        self._plan_list.blockSignals(True)
+        try:
+            self._plan_list.clear()
+            for task in db.list_plan_tasks(self._conn, self._today()):
+                item = QListWidgetItem(task["text"])
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsSelectable
+                )
+                item.setCheckState(
+                    Qt.CheckState.Checked if task["done"]
+                    else Qt.CheckState.Unchecked
+                )
+                item.setData(Qt.ItemDataRole.UserRole, task["id"])
+                self._apply_done_style(item, task["done"])
+                self._plan_list.addItem(item)
+        finally:
+            self._plan_list.blockSignals(False)
+        self._update_plan_counter()
+
+    @staticmethod
+    def _apply_done_style(item: QListWidgetItem, done: bool) -> None:
+        from PySide6.QtGui import QBrush, QColor
+
+        if done:
+            item.setForeground(QBrush(QColor("#94a3b8")))
+        else:
+            item.setForeground(QBrush(QColor("#1f2933")))
+
+    def _update_plan_counter(self) -> None:
+        tasks = db.list_plan_tasks(self._conn, self._today())
+        done = sum(1 for t in tasks if t["done"])
+        self._plan_progress_label.setText(f"{done} of {len(tasks)} done")
+
+    def _on_add_plan_task_clicked(self) -> None:
+        text = self._task_input.text()
+        if not text.strip():
+            self._warn("Type a task before adding it.")
+            return
+        db.add_plan_task(self._conn, self._today(), text)
+        self._task_input.clear()
+        self._refresh_plan()
+
+    def _on_plan_item_changed(self, item: QListWidgetItem) -> None:
+        if self._plan_updating:
+            return
+        self._plan_updating = True
+        try:
+            done = item.checkState() == Qt.CheckState.Checked
+            task_id = item.data(Qt.ItemDataRole.UserRole)
+            db.set_plan_task_done(self._conn, task_id, done)
+            self._apply_done_style(item, done)  # fires itemChanged again; guard handles it
+            self._update_plan_counter()
+        finally:
+            self._plan_updating = False
+
+    def _on_delete_plan_task_clicked(self) -> None:
+        item = self._plan_list.currentItem()
+        if item is None:
+            self._warn("Select a task to delete first.")
+            return
+        db.delete_plan_task(self._conn, item.data(Qt.ItemDataRole.UserRole))
+        self._refresh_plan()
+
+    def _on_clear_completed_clicked(self) -> None:
+        db.clear_completed_plan_tasks(self._conn, self._today())
+        self._refresh_plan()
+
     def _build_categories_tab(self) -> QWidget:
         tab = QWidget()
         layout = QHBoxLayout(tab)
@@ -324,16 +458,46 @@ class MainWindow(QMainWindow):
             self.refresh_dashboard()
 
     def _on_tab_changed(self, index: int) -> None:
-        """Keep the categories editor current with newly seen apps (FR-011)."""
+        """Keep tab content current (categories: newly seen apps; plan: today)."""
         if index == 2:
+            self._refresh_plan()
+        elif index == 3:
             self._refresh_categories()
 
     def _on_start_clicked(self) -> None:
+        if self._controller.state != NOT_TRACKING:
+            self._warn("Tracking is already running.")
+            return
+        if not db.list_plan_tasks(self._conn, self._today()):
+            if not self._confirm_plan_nudge():
+                self.tabs.setCurrentIndex(2)  # open the Daily plan tab
+                return
         if self._controller.start():
             self._timer.start()
             self._apply_state()
-        else:
-            self._warn("Tracking is already running.")
+            self._refresh_plan()
+
+    def _confirm_plan_nudge(self) -> bool:
+        """Gentle nudge when Start is pressed with an empty plan.
+
+        Returns True to start anyway, False to stay put (the window then
+        switches to the Daily plan tab).
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Today's plan is empty")
+        box.setText(
+            "You haven't written anything in today's plan yet.\n\n"
+            "Do you want to write down what you're doing first?"
+        )
+        write_btn = box.addButton(
+            "Write plan", QMessageBox.ButtonRole.AcceptRole
+        )
+        start_btn = box.addButton(
+            "Start anyway", QMessageBox.ButtonRole.RejectRole
+        )
+        box.setDefaultButton(write_btn)
+        box.exec()
+        return box.clickedButton() is start_btn
 
     def _on_pause_resume_clicked(self) -> None:
         if self._controller.state == TRACKING:
@@ -354,6 +518,31 @@ class MainWindow(QMainWindow):
             self.refresh_dashboard()
         else:
             self._warn("Tracking is already stopped.")
+
+    def _on_reset_day_clicked(self) -> None:
+        day = self._today()
+        if not self._confirm_reset():
+            return
+        before = db.daily_category_seconds(self._conn, day)
+        deleted = db.delete_intervals_for_day(self._conn, day)
+        before_seconds = reporting.non_idle_total(before) + before[config.CATEGORY_IDLE]
+        self.refresh_dashboard()
+        self.statusBar().showMessage(
+            f"Today's tracked time was reset — removed {deleted} intervals,"
+            f" clearing {reporting.format_seconds(before_seconds)}.",
+            8000,
+        )
+
+    def _confirm_reset(self) -> bool:
+        reply = QMessageBox.question(
+            self,
+            "Reset today's data?",
+            "All tracked intervals recorded today will be permanently deleted.\n\n"
+            "Past days and your daily plan are not affected. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     def _on_save_category_clicked(self) -> None:
         app_name = self._selected_app_name()

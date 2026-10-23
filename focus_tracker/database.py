@@ -26,8 +26,19 @@ CREATE TABLE IF NOT EXISTS app_category (
     category   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS daily_task (
+    id         INTEGER PRIMARY KEY,
+    day        TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_usage_started_at
     ON usage_interval (started_at);
+
+CREATE INDEX IF NOT EXISTS idx_daily_task_day
+    ON daily_task (day);
 """
 
 
@@ -200,3 +211,95 @@ def list_known_apps(
     for app_name, rule in rows:
         merged[app_name] = rule or config.CATEGORY_UNCLASSIFIED
     return sorted(merged.items())
+
+
+# --- day reset (per-day data reset feature) -----------------------------------
+
+def delete_intervals_for_day(conn: sqlite3.Connection, day: dt.date) -> int:
+    """Permanently remove every usage interval starting on *day*.
+
+    Intervening days and all category rules are untouched. Returns the
+    number of rows deleted.
+    """
+    window_start = dt.datetime.combine(day, dt.time.min).isoformat(timespec="seconds")
+    window_end = dt.datetime.combine(
+        day + dt.timedelta(days=1), dt.time.min
+    ).isoformat(timespec="seconds")
+    cursor = conn.execute(
+        "DELETE FROM usage_interval WHERE started_at >= ? AND started_at < ?",
+        (window_start, window_end),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+# --- daily plan / todo tasks (per-day, checkbox list) ---------------------------
+
+def add_plan_task(
+    conn: sqlite3.Connection, day: dt.date, text: str
+) -> dict:
+    """Append a task to *day*'s plan. Blank text is rejected."""
+    clean = text.strip()
+    if not clean:
+        raise ValueError("a plan task needs a description")
+    created_at = dt.datetime.now().isoformat(timespec="seconds")
+    cursor = conn.execute(
+        "INSERT INTO daily_task (day, text, done, created_at) VALUES (?, ?, 0, ?)",
+        (day.isoformat(), clean, created_at),
+    )
+    conn.commit()
+    return {
+        "id": cursor.lastrowid,
+        "day": day,
+        "text": clean,
+        "done": False,
+    }
+
+
+def list_plan_tasks(conn: sqlite3.Connection, day: dt.date) -> list[dict]:
+    """Return *day*'s plan tasks in creation order."""
+    rows = conn.execute(
+        "SELECT id, text, done FROM daily_task"
+        " WHERE day = ? ORDER BY id",
+        (day.isoformat(),),
+    ).fetchall()
+    return [
+        {"id": task_id, "text": text, "done": bool(done)}
+        for task_id, text, done in rows
+    ]
+
+
+def set_plan_task_done(
+    conn: sqlite3.Connection, task_id: int, done: bool
+) -> dict | None:
+    """Mark one task done/undone. Returns the updated row, or None if unknown."""
+    conn.execute(
+        "UPDATE daily_task SET done = ? WHERE id = ?",
+        (1 if done else 0, task_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT day, text, done FROM daily_task WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    day_iso, text, state = row
+    return {
+        "id": task_id,
+        "day": dt.date.fromisoformat(day_iso),
+        "text": text,
+        "done": bool(state),
+    }
+
+
+def delete_plan_task(conn: sqlite3.Connection, task_id: int) -> None:
+    """Remove one task; unknown ids are ignored."""
+    conn.execute("DELETE FROM daily_task WHERE id = ?", (task_id,))
+    conn.commit()
+
+
+def clear_completed_plan_tasks(conn: sqlite3.Connection, day: dt.date) -> None:
+    """Remove every completed task from *day*'s plan."""
+    conn.execute("DELETE FROM daily_task WHERE day = ? AND done = 1", (day.isoformat(),))
+    conn.commit()
